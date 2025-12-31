@@ -2,18 +2,14 @@ import tensorflow as tf
 from tensorflow.keras.layers import *
 
 class SemanticTokenization(tf.keras.layers.Layer):
-    def __init__(self, token_dim, **kwargs):
+    def __init__(self, token_dim, feature_groups, **kwargs):
         super().__init__(**kwargs)
         self.token_dim = token_dim
         self.dense_layers = []  # 存储预创建的Dense层
-
-    def build(self, input_shape):
-        """在build阶段预创建所有Dense层"""
-        for i in range(len(input_shape)):
+        for i in range(feature_groups):
             self.dense_layers.append(
                 Dense(self.token_dim, activation='linear', name=f'dense_{i}')
             )
-        super().build(input_shape)
 
     def call(self, inputs):
         """重用预创建的Dense层进行特征转换"""
@@ -97,9 +93,9 @@ class RankMixerLayer(Layer):
         return x
 
 class RankMixer(Layer):
-    def __init__(self,num_layers,num_T,num_D,num_H,expansion_ratio,token_dim,**kwargs):
+    def __init__(self,num_layers,num_T,num_D,num_H,expansion_ratio,token_dim,feature_groups,**kwargs):
         super().__init__(**kwargs)
-        self.semantic_tokenization = SemanticTokenization(token_dim)
+        self.semantic_tokenization = SemanticTokenization(token_dim,feature_groups)
         self.layers_list = []
         for _ in range(num_layers):
             self.layers_list.append(RankMixerLayer(num_T,num_D,num_H,expansion_ratio))
@@ -115,6 +111,5 @@ if __name__ == '__main__':
         tf.keras.Input(shape=(16,), name='feature_2'),
         tf.keras.Input(shape=(32,), name='feature_3'),
         tf.keras.Input(shape=(32,), name='feature_4')]
-    model = RankMixer(num_layers=2,num_T=4,num_D=128,num_H=4,expansion_ratio=4,token_dim=128)
+    model = RankMixer(num_layers=2,num_T=4,num_D=128,num_H=4,expansion_ratio=4,token_dim=128,feature_groups=4)
     outputs = model(inputs)
-    print(outputs.shape)
