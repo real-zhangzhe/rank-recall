@@ -36,9 +36,6 @@ class PerTokenFFN(Layer):
     def __init__(self, num_T, num_D, expansion_ratio=4, **kwargs):
         super().__init__(**kwargs)
         
-        # ReLU Router - Gate权重
-        self.gate = Dense(num_T, use_bias=False, name='relu_router_gate')
-        
         # 每个expert的FFN
         self.experts = []
         for i in range(num_T):
@@ -48,36 +45,15 @@ class PerTokenFFN(Layer):
                 Dense(num_D, name=f'expert_{i}_fc2')
             ])
     
-    def call(self, x):
-        # ReLU Router
-        logits = self.gate(x)  # (batch, seq_len, num_experts)
-        routing_weights = tf.nn.relu(logits)  # ReLU激活
-        routing_mask = tf.cast(routing_weights > 0, tf.float32)  # 路由掩码
-        
-        # 归一化路由权重
-        routing_weights = routing_weights * routing_mask
-        routing_weights_sum = tf.reduce_sum(routing_weights, axis=-1, keepdims=True) + 1e-9
-        routing_weights = routing_weights / routing_weights_sum
-        
-        # Expert计算
-        expert_outputs = []
-        for expert_layers in self.experts:
-            h = x
+    def call(self, x):        
+        outputs=[]
+        for i, expert_layers in enumerate(self.experts):
+            h = x[:, i, :]
             for layer in expert_layers:
                 h = layer(h)
-            expert_outputs.append(h)
+            outputs.append(h)
         
-        # Stack: (num_experts, batch, seq_len, num_D)
-        expert_outputs = tf.stack(expert_outputs, axis=0)
-        
-        # 加权组合: (batch, seq_len, 1, num_experts) @ (num_experts, batch, seq_len, num_D)
-        routing_weights = tf.expand_dims(routing_weights, axis=-2)  # (batch, seq_len, 1, num_experts)
-        expert_outputs = tf.transpose(expert_outputs, [1, 2, 0, 3])  # (batch, seq_len, num_experts, num_D)
-        
-        output = tf.matmul(routing_weights, expert_outputs)  # (batch, seq_len, 1, num_D)
-        output = tf.squeeze(output, axis=-2)  # (batch, seq_len, num_D)
-        
-        return output
+        return tf.stack(outputs, axis=1)
     
 class RankMixerLayer(Layer):
     def __init__(self,num_T,num_D,num_H,expansion_ratio,**kwargs):
