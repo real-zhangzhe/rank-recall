@@ -2,19 +2,17 @@ import tensorflow as tf
 from tensorflow.keras.layers import *
 
 class SemanticTokenization(tf.keras.layers.Layer):
-    def __init__(self, token_dim, feature_groups, **kwargs):
+    def __init__(self, num_T, num_D, **kwargs):
         super().__init__(**kwargs)
-        self.token_dim = token_dim
-        self.dense_layers = []  # 存储预创建的Dense层
-        for i in range(feature_groups):
-            self.dense_layers.append(
-                Dense(self.token_dim, activation='linear', name=f'dense_{i}')
-            )
-
-    def call(self, inputs):
-        """重用预创建的Dense层进行特征转换"""
-        tokenized = [layer(input) for layer, input in zip(self.dense_layers, inputs)]
-        return tf.stack(tokenized, axis=1)
+        self.num_T = num_T
+        self.num_D = num_D
+        self.dense_layers = [Dense(num_D, activation='linear') for _ in range(num_T)]
+        
+        
+    def call(self, x):
+        x = tf.split(x, self.num_T, axis=-1)  # (B, num_T, D/num_T)
+        x = [layer(x[i]) for i, layer in enumerate(self.dense_layers)]
+        return  tf.stack(x, axis=1) # (B, num_T, num_D)
         
         
         
@@ -63,15 +61,17 @@ class RankMixerLayer(Layer):
         self.norm1 = LayerNormalization(epsilon=1e-6)
         self.norm2 = LayerNormalization(epsilon=1e-6)
     def call(self,x):
+        print(x.shape)
         mixed_x = self.token_mixer(x)
+        print(mixed_x.shape)
         x = self.norm1(x+mixed_x)
         x = self.norm2(x+self.per_token_ffn(x))
         return x
 
 class RankMixer(Layer):
-    def __init__(self,num_layers,num_T,num_D,num_H,expansion_ratio,feature_groups,**kwargs):
+    def __init__(self,num_layers,num_T,num_D,num_H,expansion_ratio,**kwargs):
         super().__init__(**kwargs)
-        self.semantic_tokenization = SemanticTokenization(num_D,feature_groups)
+        self.semantic_tokenization = SemanticTokenization(num_T,num_D)
         self.layers_list = []
         for _ in range(num_layers):
             self.layers_list.append(RankMixerLayer(num_T,num_D,num_H,expansion_ratio))
@@ -83,11 +83,8 @@ class RankMixer(Layer):
     
     
 if __name__ == '__main__':
-    inputs = [tf.keras.Input(shape=(8,), name='feature_1'),
-        tf.keras.Input(shape=(16,), name='feature_2'),
-        tf.keras.Input(shape=(32,), name='feature_3'),
-        tf.keras.Input(shape=(32,), name='feature_4')]
-    rankmixer = RankMixer(num_layers=2,num_T=4,num_D=512,num_H=4,expansion_ratio=4,feature_groups=4) # to
+    inputs = Input(shape=(512,))
+    rankmixer = RankMixer(num_layers=2,num_T=8,num_D=512,num_H=8,expansion_ratio=4) # to
     outputs = rankmixer(inputs)
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
     model.summary()
