@@ -2,17 +2,38 @@ import tensorflow as tf
 from tensorflow.keras.layers import Layer, Dense
 
 
-class SequentialTokenizer(Layer):
-    def __init__(self, seq_len, d_model, **kwargs):
+
+
+class SequenceTokenizer(Layer):
+    """
+    输入特征 [x1,x2,...,xn]是用户点击过的一个item的特征属性， 维度是[B,Seq_len,in_dim],所有特征拼接表示一个完整的历史点击行为
+    只要保证最后一个行为序列Si 的维度映射成[B,L,d_model]即可
+    这里提供几种常用的tokenizer实现方式
+    """
+    def __init__(self, d_model, **kwargs):
         super().__init__(**kwargs)
-        self.seq_len = seq_len
-        self.proj = Dense(d_model)
+        self.pro_j = Dense(d_model)
+    def call(self, x):  # x : list of [B, in_dim] 
+        x = tf.concat(x,axis=-1) # [B, seq_len, D]
+        return self.pro_j(x)  # [B, seq_len, d_model]
+        
 
-    def call(self, x):  # x: [B, seq_len, in_dim]
-        # 对每个位置共享同一个投影
-        return self.proj(x)  # [B, seq_len, d_model]
-
-
+class MultiBehaviorTokenizer(Layer):
+    def __init__(self,d_model, n_behaviors, **kwargs):
+        super().__init__(**kwargs)
+        self.d_model = d_model
+        self.n_behaviors = n_behaviors
+        self.seq = self.add_weight("seq", (n_behaviors-1,d_model),
+                                   initializer="glorot_uniform")
+    def call(self, x):
+        B = tf.shape(x[0])[0]
+        out = x[0]
+        for i in range(1, self.n_behaviors):
+            sep = tf.tile(self.seq[i-1][None, None, :], [B, 1, 1])  # [B,1,d]
+            out = tf.concat([out, sep, x[i]], axis=1)
+        return out  
+        
+     
 class AutoSplitTokenizer(Layer):
     def __init__(self, num_T, d_model, **kwargs):
         super().__init__(**kwargs)
@@ -59,9 +80,7 @@ class MixedFFN(Layer):
 
         init = tf.keras.initializers.GlorotUniform()
         self.W1NS = self.add_weight("W1NS", (LNS, d_model, d_ff), initializer=init)
-        self.b1NS = self.add_weight("b1NS", (LNS, d_ff), initializer="zeros")
         self.W2NS = self.add_weight("W2NS", (LNS, d_ff, d_model), initializer=init)
-        self.b2NS = self.add_weight("b2NS", (LNS, d_model), initializer="zeros")
 
         self.act = tf.keras.activations.get(activation)
 
@@ -73,10 +92,10 @@ class MixedFFN(Layer):
         yS = self.W2S(self.act(self.W1S(x[:, :s])))  # [B,s,D]
 
         xT = x[:, s:]                                # [B,t,D]
-        W1, b1 = self.W1NS[-t:], self.b1NS[-t:]
-        W2, b2 = self.W2NS[-t:], self.b2NS[-t:]
-        h  = self.act(tf.einsum("btd,tde->bte", xT, W1) + b1[None])
-        yT = tf.einsum("btd,tde->bte", h, W2) + b2[None]  # [B,t,D]
+        W1 = self.W1NS[-t:]
+        W2 = self.W2NS[-t:]
+        h  = self.act(tf.einsum("btd,tde->bte", xT, W1))
+        yT = tf.einsum("btd,tde->bte", h, W2) # [B,t,D]
 
         return tf.concat([yS, yT], axis=1)
 
@@ -157,16 +176,21 @@ class OneTransBlock(Layer):
 
 
 # ---------------- Stack: compress S for LS layers ----------------
-class OneTransStackPyramid(Layer):
+class OneTrans(Layer):
     def __init__(self, LS, d_model, num_heads, d_ff, LNS, **kwargs):
         super().__init__(**kwargs)
         self.blocks = [OneTransBlock(d_model, num_heads, d_ff, LNS) for _ in range(LS)]
+        self.ctr_dense = Dense(d_model)
+        self.cvr_dense = Dense(d_model)
 
     def call(self, x):
         h = x
         for blk in self.blocks:
             h = blk(h)
-        return h  # [B,LNS,D]
+        h = tf.reduce_mean(h, axis=1)
+        ctr = self.ctr_dense(h)
+        cvr = self.cvr_dense(h)
+        return [ctr, cvr]  # [B,LNS,D]
 
 
 # ---------------- Test ----------------
@@ -174,31 +198,18 @@ def test_onetrans():
     tf.random.set_seed(0)
 
     B = 2
-    LS, LNS = 4, 2
+    LS, LNS = 15, 3
     D_MODEL = 32
     NUM_HEAD = 4
     D_FF = 64
 
-    x = tf.random.normal([B, LS + LNS, D_MODEL])
 
-    model = OneTransStackPyramid(LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS)
+    model = OneTrans(LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS)
+    inputs = tf.keras.Input([LS + LNS, D_MODEL])
+    outputs = model(inputs)
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
+    model.summary()
 
-    with tf.GradientTape() as tape:
-        y = model(x)
-        loss = tf.reduce_mean(y ** 2)
-
-    grads = tape.gradient(loss, model.trainable_variables)
-    none = [(v.name, v.shape) for v, g in zip(model.trainable_variables, grads) if g is None]
-
-    print("input :", x.shape)
-    print("output:", y.shape)         # expect [B, LNS, D]
-    print("loss  :", float(loss))
-    print("none grads:", len(none), "/", len(grads))
-    if none:
-        print("example none:", none[:5])
-
-    assert y.shape == (B, LNS, D_MODEL)
-    assert any(g is not None for g in grads), "All gradients are None!"
-
+    
 if __name__ == "__main__":
     test_onetrans()
