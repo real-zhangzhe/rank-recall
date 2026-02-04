@@ -169,28 +169,34 @@ class OneTransBlock(Layer):
         self.mha = PyramidMixedCausalAttention(d_model, num_heads, LNS)
         self.ffn = MixedFFN(d_model, d_ff, LNS)
 
-    def call(self, x):
-        Lq = tf.shape(x)[1] - 1                  # 每层只压缩1个最旧token
+    def call(self, x, Lq):
         z = self.mha(self.ln1(x), Lq) + x[:, -Lq:]   # residual对齐尾部
         return self.ffn(self.ln2(z)) + z
 
 
 # ---------------- Stack: compress S for LS layers ----------------
+
 class OneTrans(Layer):
-    def __init__(self, LS, d_model, num_heads, d_ff, LNS, **kwargs):
+    def __init__(self, LS, d_model, num_heads, d_ff, LNS, n_task, **kwargs):
         super().__init__(**kwargs)
-        self.blocks = [OneTransBlock(d_model, num_heads, d_ff, LNS) for _ in range(LS)]
         self.ctr_dense = Dense(d_model)
         self.cvr_dense = Dense(d_model)
+        self.Lq_list = list(range(LS+LNS, LNS, -4))  # LS+LNS .. LNS+1
+        self.Lq_list.append(LNS)      
+        self.blocks = [
+            OneTransBlock(d_model, num_heads, d_ff, LNS=LNS)
+            for _ in range(len(self.Lq_list))
+        ]# finally LNS. 
+        self.task_tower = Dense(n_task)
 
     def call(self, x):
         h = x
-        for blk in self.blocks:
-            h = blk(h)
-        h = tf.reduce_mean(h, axis=1)
-        ctr = self.ctr_dense(h)
-        cvr = self.cvr_dense(h)
-        return [ctr, cvr]  # [B,LNS,D]
+        for blk,Lq_py in zip(self.blocks, self.Lq_list):
+            h = blk(h, Lq_py)   
+        h = tf.transpose(h, [0,2,1])  # [B,D,LNS]
+        h = self.task_tower(h)  # [B,D,n_task]
+        h = tf.transpose(h, [0,2,1])  # [B,n_task,D]
+        return h  # [B, n_task, D]
 
 
 # ---------------- Test ----------------
@@ -198,14 +204,14 @@ def test_onetrans():
     tf.random.set_seed(0)
 
     B = 2
-    LS, LNS = 15, 3
+    LS, LNS = 4, 2
     D_MODEL = 32
     NUM_HEAD = 4
     D_FF = 64
 
 
-    model = OneTrans(LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS)
-    inputs = tf.keras.Input([LS + LNS, D_MODEL])
+    model = OneTrans(LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS,n_task=2)
+    inputs = tf.random.normal([B, LS + LNS, D_MODEL])
     outputs = model(inputs)
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
     model.summary()
