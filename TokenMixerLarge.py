@@ -51,6 +51,25 @@ class TokenMixing(Layer):
         x = tf.reshape(x,(-1,self.num_H,self.num_T*self.d_k)) # (B,H,T*D/H)
         return x 
     
+class TokenUnmixing(Layer):
+    """
+    (B, H, T*(D/H)) -> (B, T, D)
+    """
+    def __init__(self, num_T, num_D, num_H, **kwargs):
+        super().__init__(**kwargs)
+        self.num_T = int(num_T)
+        self.num_D = int(num_D)
+        self.num_H = int(num_H)
+
+        assert self.num_D % self.num_H == 0, "D must be divisible by H"
+        self.d_k = self.num_D // self.num_H
+
+    def call(self, x):
+        # x: (B, H, T*d_k)
+        x = tf.reshape(x, (-1, self.num_H, self.num_T, self.d_k))   # (B,H,T,d_k)
+        x = tf.transpose(x, perm=[0, 2, 1, 3])                      # (B,T,H,d_k)
+        x = tf.reshape(x, (-1, self.num_T, self.num_D))             # (B,T,D)
+        return x
 
 class SwiGLU(Layer):
     def __init__(self, num_D, expansion_ratio=4, **kwargs):
@@ -82,15 +101,16 @@ class TokenMixerLargeBlock(Layer):
         super().__init__(**kwargs)
         self.norm1 = RMSLayerNorm()
         self.norm2 = RMSLayerNorm()
-        self.fc1 = PSwiGLU(num_T, num_D, expansion_ratio)
+        self.fc1 = PSwiGLU(num_H, num_T*num_D/num_H, expansion_ratio)
         self.fc2 = PSwiGLU(num_T, num_D, expansion_ratio)
         self.token_mixer = TokenMixing(num_T, num_D, num_H)
-        self.token_revert = TokenMixing(num_T, num_H, num_D)  # 与token_mixer结构相同，用于将token_mixer的输出还原回原始维度, num_D和num_H交换位置
+        self.token_revert = TokenUnmixing(num_T, num_D, num_H)  # 与token_mixer结构相同，用于将token_mixer的输出还原回原始维度, num_D和num_H交换位置
     
     def call(self, x):
         mixed_x = self.token_mixer(x)
         x = self.norm1(mixed_x + self.fc1(mixed_x))
         revert_x = self.token_revert(x)
+        print(revert_x.shape)
         x = self.norm2(revert_x + self.fc2(revert_x))
         return x
     
@@ -98,8 +118,13 @@ class TokenMixerLarge(Layer):
     def __init__(self, num_blocks, num_T, num_D, num_H, expansion_ratio, **kwargs):
         super().__init__(**kwargs)
         self.blocks = [TokenMixerLargeBlock(num_T, num_D, num_H, expansion_ratio) for _ in range(num_blocks)]
+        self.ctr_dense = Dense(num_D)
+        self.cvr_dense = Dense(num_D)
     
     def call(self, x):
         for block in self.blocks:
             x = block(x)
-        return x
+        x = tf.reduce_mean(x,axis=1)
+        ctr = self.ctr_dense(x)
+        cvr = self.cvr_dense(x)
+        return [ctr,cvr]
