@@ -4,7 +4,9 @@ from tensorflow.keras import regularizers
 
 
 class StemLayer(tf.keras.layers.Layer):
-    def __init__(self, n_task, n_experts, expert_dim, n_expert_share, dnn_reg_l2=1e-5, **kwargs):
+    def __init__(
+        self, n_task, n_experts, expert_dim, n_expert_share, dnn_reg_l2=1e-5, **kwargs
+    ):
         super().__init__(**kwargs)
         self.n_task = n_task
         self.expert_dim = expert_dim
@@ -14,25 +16,37 @@ class StemLayer(tf.keras.layers.Layer):
         for i in range(n_task):
             sub_exp = []
             for _ in range(n_experts[i]):
-                sub_exp.append([
-                    Dense(expert_dim, activation="swish",
-                          kernel_regularizer=regularizers.l2(dnn_reg_l2)),
-                    Dropout(0.3)
-                ])
+                sub_exp.append(
+                    [
+                        Dense(
+                            expert_dim,
+                            activation="swish",
+                            kernel_regularizer=regularizers.l2(dnn_reg_l2),
+                        ),
+                        Dropout(0.3),
+                    ]
+                )
             self.E_layer.append(sub_exp)
 
         self.share_layer = []
         for _ in range(n_expert_share):
-            self.share_layer.append([
-                Dense(expert_dim, activation="swish",
-                      kernel_regularizer=regularizers.l2(dnn_reg_l2)),
-                Dropout(0.3)
-            ])
+            self.share_layer.append(
+                [
+                    Dense(
+                        expert_dim,
+                        activation="swish",
+                        kernel_regularizer=regularizers.l2(dnn_reg_l2),
+                    ),
+                    Dropout(0.3),
+                ]
+            )
 
         self.gate_layers = [
-            Dense(n_expert_share + sum(n_experts),
-                  activation="softmax",
-                  kernel_regularizer=regularizers.l2(dnn_reg_l2))
+            Dense(
+                n_expert_share + sum(n_experts),
+                activation="softmax",
+                kernel_regularizer=regularizers.l2(dnn_reg_l2),
+            )
             for _ in range(n_task + 1)
         ]
 

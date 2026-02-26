@@ -2,38 +2,40 @@ import tensorflow as tf
 from tensorflow.keras.layers import Layer, Dense
 
 
-
-
 class SequenceTokenizer(Layer):
     """
     输入特征 [x1,x2,...,xn]是用户点击过的一个item的特征属性， 维度是[B,Seq_len,in_dim],所有特征拼接表示一个完整的历史点击行为
     只要保证最后一个行为序列Si 的维度映射成[B,L,d_model]即可
     这里提供几种常用的tokenizer实现方式
     """
+
     def __init__(self, d_model, **kwargs):
         super().__init__(**kwargs)
         self.pro_j = Dense(d_model)
-    def call(self, x):  # x : list of [B, in_dim] 
-        x = tf.concat(x,axis=-1) # [B, seq_len, D]
+
+    def call(self, x):  # x : list of [B, in_dim]
+        x = tf.concat(x, axis=-1)  # [B, seq_len, D]
         return self.pro_j(x)  # [B, seq_len, d_model]
-        
+
 
 class MultiBehaviorTokenizer(Layer):
-    def __init__(self,d_model, n_behaviors, **kwargs):
+    def __init__(self, d_model, n_behaviors, **kwargs):
         super().__init__(**kwargs)
         self.d_model = d_model
         self.n_behaviors = n_behaviors
-        self.seq = self.add_weight("seq", (n_behaviors-1,d_model),
-                                   initializer="glorot_uniform")
+        self.seq = self.add_weight(
+            "seq", (n_behaviors - 1, d_model), initializer="glorot_uniform"
+        )
+
     def call(self, x):
         B = tf.shape(x[0])[0]
         out = x[0]
         for i in range(1, self.n_behaviors):
-            sep = tf.tile(self.seq[i-1][None, None, :], [B, 1, 1])  # [B,1,d]
+            sep = tf.tile(self.seq[i - 1][None, None, :], [B, 1, 1])  # [B,1,d]
             out = tf.concat([out, sep, x[i]], axis=1)
-        return out  
-        
-     
+        return out
+
+
 class AutoSplitTokenizer(Layer):
     def __init__(self, num_T, d_model, **kwargs):
         super().__init__(**kwargs)
@@ -53,9 +55,11 @@ class GroupWiseTokenizer(Layer):
         self.proj = [Dense(d_model) for _ in range(num_T)]
 
     def call(self, x):  # x: [B, in_dim],  in_dim % num_T == 0
-        parts = tf.split(x, self.num_T, axis=-1)                 # list of [B, in_dim/num_T]
+        parts = tf.split(x, self.num_T, axis=-1)  # list of [B, in_dim/num_T]
         tokens = [p(parts[i]) for i, p in enumerate(self.proj)]  # each -> [B, d_model]
-        return tf.stack(tokens, axis=1)    
+        return tf.stack(tokens, axis=1)
+
+
 # ---------------- RMSNorm ----------------
 class RMSLayerNorm(Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -63,7 +67,9 @@ class RMSLayerNorm(Layer):
         self.eps = epsilon
 
     def build(self, input_shape):
-        self.scale = self.add_weight("scale", shape=(input_shape[-1],), initializer="ones")
+        self.scale = self.add_weight(
+            "scale", shape=(input_shape[-1],), initializer="ones"
+        )
 
     def call(self, x):
         rms = tf.sqrt(tf.reduce_mean(tf.square(x), axis=-1, keepdims=True) + self.eps)
@@ -86,16 +92,16 @@ class MixedFFN(Layer):
 
     def call(self, x):
         T = tf.shape(x)[1]
-        t = tf.minimum(T, self.LNS)   # tail token-specific count
-        s = T - t                     # shared count
+        t = tf.minimum(T, self.LNS)  # tail token-specific count
+        s = T - t  # shared count
 
         yS = self.W2S(self.act(self.W1S(x[:, :s])))  # [B,s,D]
 
-        xT = x[:, s:]                                # [B,t,D]
+        xT = x[:, s:]  # [B,t,D]
         W1 = self.W1NS[-t:]
         W2 = self.W2NS[-t:]
-        h  = self.act(tf.einsum("btd,tde->bte", xT, W1))
-        yT = tf.einsum("btd,tde->bte", h, W2) # [B,t,D]
+        h = self.act(tf.einsum("btd,tde->bte", xT, W1))
+        yT = tf.einsum("btd,tde->bte", h, W2)  # [B,t,D]
 
         return tf.concat([yS, yT], axis=1)
 
@@ -111,6 +117,7 @@ class PyramidMixedCausalAttention(Layer):
       - tail min(L, LNS) tokens use token-specific
       - earlier tokens use shared
     """
+
     def __init__(self, d_model, num_heads, LNS, **kwargs):
         super().__init__(**kwargs)
         assert d_model % num_heads == 0
@@ -138,8 +145,8 @@ class PyramidMixedCausalAttention(Layer):
 
     def call(self, x, Lq):
         L = tf.shape(x)[1]
-        t = tf.minimum(L, self.LNS)   # tail token-specific
-        s = L - t                     # head shared
+        t = tf.minimum(L, self.LNS)  # tail token-specific
+        s = L - t  # head shared
 
         xS, xT = x[:, :s], x[:, s:]
 
@@ -150,7 +157,9 @@ class PyramidMixedCausalAttention(Layer):
         Q = Q[:, -Lq:]  # only tail queries (all tokens in Q will be updated)
 
         Qh, Kh, Vh = self._mh(Q), self._mh(K), self._mh(V)
-        logits = tf.matmul(Qh, Kh, transpose_b=True) * (tf.cast(self.dh, tf.float32) ** -0.5)
+        logits = tf.matmul(Qh, Kh, transpose_b=True) * (
+            tf.cast(self.dh, tf.float32) ** -0.5
+        )
 
         # causal mask for tail queries: absolute indices [L-Lq .. L-1]
         q = tf.range(L - Lq, L)[:, None]
@@ -158,7 +167,7 @@ class PyramidMixedCausalAttention(Layer):
         logits += tf.cast(k > q, tf.float32)[None, None] * (-1e9)
 
         out = tf.matmul(tf.nn.softmax(logits, -1), Vh)  # [B,H,Lq,dh]
-        return self.Wo(self._unmh(out))                 # [B,Lq,D]
+        return self.Wo(self._unmh(out))  # [B,Lq,D]
 
 
 # ---------------- OneTrans Block (auto Lq=L-1) ----------------
@@ -170,32 +179,33 @@ class OneTransBlock(Layer):
         self.ffn = MixedFFN(d_model, d_ff, LNS)
 
     def call(self, x, Lq):
-        z = self.mha(self.ln1(x), Lq) + x[:, -Lq:]   # residual对齐尾部
+        z = self.mha(self.ln1(x), Lq) + x[:, -Lq:]  # residual对齐尾部
         return self.ffn(self.ln2(z)) + z
 
 
 # ---------------- Stack: compress S for LS layers ----------------
+
 
 class OneTrans(Layer):
     def __init__(self, LS, d_model, num_heads, d_ff, LNS, n_task, **kwargs):
         super().__init__(**kwargs)
         self.ctr_dense = Dense(d_model)
         self.cvr_dense = Dense(d_model)
-        self.Lq_list = list(range(LS+LNS, LNS, -4))  # LS+LNS .. LNS+1
-        self.Lq_list.append(LNS)      
+        self.Lq_list = list(range(LS + LNS, LNS, -4))  # LS+LNS .. LNS+1
+        self.Lq_list.append(LNS)
         self.blocks = [
             OneTransBlock(d_model, num_heads, d_ff, LNS=LNS)
             for _ in range(len(self.Lq_list))
-        ]# finally LNS. 
+        ]  # finally LNS.
         self.task_tower = Dense(n_task)
 
     def call(self, x):
         h = x
-        for blk,Lq_py in zip(self.blocks, self.Lq_list):
-            h = blk(h, Lq_py)   
-        h = tf.transpose(h, [0,2,1])  # [B,D,LNS]
+        for blk, Lq_py in zip(self.blocks, self.Lq_list):
+            h = blk(h, Lq_py)
+        h = tf.transpose(h, [0, 2, 1])  # [B,D,LNS]
         h = self.task_tower(h)  # [B,D,n_task]
-        h = tf.transpose(h, [0,2,1])  # [B,n_task,D]
+        h = tf.transpose(h, [0, 2, 1])  # [B,n_task,D]
         return h  # [B, n_task, D]
 
 
@@ -209,13 +219,14 @@ def test_onetrans():
     NUM_HEAD = 4
     D_FF = 64
 
-
-    model = OneTrans(LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS,n_task=2)
-    inputs = tf.random.normal([B, LS + LNS, D_MODEL])
+    model = OneTrans(
+        LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS, n_task=2
+    )
+    inputs = tf.keras.layers.Input(shape=[LS + LNS, D_MODEL])
     outputs = model(inputs)
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
     model.summary()
 
-    
+
 if __name__ == "__main__":
     test_onetrans()
