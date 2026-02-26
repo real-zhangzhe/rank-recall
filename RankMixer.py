@@ -106,45 +106,45 @@ class PerTokenSparseMoE(Layer):
             distribution="truncated_normal",
         )
         self.W1 = self.add_weight(
+            "W1",
             [self.num_T, self.num_experts, self.num_D, hidden_dim],
             initializer=init,
-            name="W1",
         )
         self.b1 = self.add_weight(
+            "b1",
             [self.num_T, self.num_experts, hidden_dim],
             initializer=tf.zeros_initializer(),
-            name="b1",
         )
         self.W2 = self.add_weight(
+            "W2",
             [self.num_T, self.num_experts, hidden_dim, self.num_D],
             initializer=init,
-            name="W2",
         )
         self.b2 = self.add_weight(
+            "b2",
             [self.num_T, self.num_experts, self.num_D],
             initializer=tf.zeros_initializer(),
-            name="b2",
         )
         self.gate_w_train = self.add_weight(
+            "gate_w_train",
             [self.num_T, self.num_D, self.num_experts],
             initializer=init,
-            name="gate_w_train",
         )
         self.gate_b_train = self.add_weight(
+            "gate_b_train",
             [self.num_T, self.num_experts],
             initializer=tf.zeros_initializer(),
-            name="gate_b_train",
         )
         if self.use_dtsi:
             self.gate_w_infer = self.add_weight(
+                "gate_w_infer",
                 [self.num_T, self.num_D, self.num_experts],
                 initializer=init,
-                name="gate_w_infer",
             )
             self.gate_b_infer = self.add_weight(
+                "gate_b_infer",
                 [self.num_T, self.num_experts],
                 initializer=tf.zeros_initializer(),
-                name="gate_b_infer",
             )
         super(PerTokenSparseMoE, self).build(input_shape)
 
