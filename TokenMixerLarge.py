@@ -97,6 +97,14 @@ class PSwiGLU(Layer):
         return tf.stack(outputs, axis=1) # (B,T,D)
 
 class TokenMixerLargeBlock(Layer):
+    """_summary_
+    num_T: int, token数量
+    num_D: int, 每个token的维度
+    num_H: int, token mixer的head数量
+    expansion_ratio: int, swiglu的扩展比例
+    num_blocks: int, block数量
+    支持 任意数量的token向任意数量的head进行mix
+    """
     def __init__(self, num_T, num_D, num_H, expansion_ratio, **kwargs):
         super().__init__(**kwargs)
         self.norm1 = RMSLayerNorm()
