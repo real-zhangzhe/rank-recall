@@ -175,8 +175,15 @@ class OneTransBlock(Layer):
 
 
 class OneTrans(Layer):
-    def __init__(self, LS, d_model, num_heads, d_ff, LNS, n_task, **kwargs):
+    def __init__(
+        self, LS, d_model, num_heads, d_ff, LNS, n_task, num_T, n_behaviors, **kwargs
+    ):
         super().__init__(**kwargs)
+        self.ns_tokenizer = AutoSplitTokenizer(num_T=num_T, d_model=d_model)
+        self.seq_tokenizer = SequenceTokenizer(d_model=d_model)
+        self.multi_behavior_tokenizer = MultiBehaviorTokenizer(
+            d_model=d_model, n_behaviors=n_behaviors
+        )
         self.ctr_dense = Dense(d_model)
         self.cvr_dense = Dense(d_model)
         self.Lq_list = list(range(LS + LNS, LNS, -4))  # LS+LNS .. LNS+1
@@ -188,7 +195,19 @@ class OneTrans(Layer):
         self.task_tower = Dense(n_task)
 
     def call(self, x):
-        h = x
+        ns_tokens = self.ns_tokenizer(x["ns"])  # [B,num_T,d]
+        s_tokens = [
+            self.seq_tokenizer(x["s"][i : i + 1]) for i in range(len(x["s"]))
+        ]  # [B, LS, d_model]
+        s_tokens = self.multi_behavior_tokenizer(s_tokens)  # [B, LS, d_model]
+        h = tf.concat(
+            [
+                ns_tokens,
+                s_tokens,
+            ],
+            axis=1,
+        )  # [B, num_T+LS, d_model]
+
         for blk, Lq_py in zip(self.blocks, self.Lq_list):
             h = blk(h, Lq_py)
         h = tf.transpose(h, [0, 2, 1])  # [B,D,LNS]
@@ -219,35 +238,22 @@ def test_onetrans():
     cart_seq = tf.random.normal([B, 20, 64])
     buy_seq = tf.random.normal([B, 10, 64])
 
-    # ==================================
-    # Tokenization 流程
-    # ==================================
-
-    # ---- 1️⃣  NS Tokenizer（论文推荐 AutoSplit） ----
-    ns_tokenizer = AutoSplitTokenizer(num_T=8, d_model=d_model)
-    ns_tokens = ns_tokenizer(ns_raw)
-
-    # ---- 2️⃣  每个行为序列做 embedding ----
-    seq_tokenizer = SequenceTokenizer(d_model=d_model)
-
-    click_tokens = seq_tokenizer([click_seq])
-    cart_tokens = seq_tokenizer([cart_seq])
-    buy_tokens = seq_tokenizer([buy_seq])
-
-    # ---- 3️⃣  多行为 merge + SEP ----
-    multi_behavior_tokenizer = MultiBehaviorTokenizer(d_model=d_model, n_behaviors=3)
-
-    # 论文推荐高意图在前：buy → cart → click
-    s_tokens = multi_behavior_tokenizer([buy_tokens, cart_tokens, click_tokens])
-
-    # ---- 4️⃣  拼接成 unified token sequence ----
-    X0 = tf.concat([s_tokens, ns_tokens], axis=1)
-
-    print("Final unified token shape:", X0.shape)
     model = OneTrans(
-        LS=LS, d_model=d_model, num_heads=8, d_ff=d_model, LNS=LNS, n_task=2
+        LS=LS,
+        d_model=d_model,
+        num_heads=8,
+        d_ff=d_model,
+        LNS=LNS,
+        n_task=2,
+        num_T=8,
+        n_behaviors=3,
     )
-    outputs = model(X0)
+    outputs = model(
+        {
+            "ns": ns_raw,
+            "s": [buy_seq, cart_seq, click_seq],
+        }
+    )
     print("Model output shape:", outputs.shape)
 
 
