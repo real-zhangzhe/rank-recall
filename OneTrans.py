@@ -195,9 +195,9 @@ class OneTrans(Layer):
         self.task_tower = Dense(n_task)
 
     def call(self, x):
-        ns_tokens = self.ns_tokenizer(x["ns"])  # [B,num_T,d]
+        ns_tokens = self.ns_tokenizer(x[0])  # [B,num_T,d]
         s_tokens = [
-            self.seq_tokenizer(x["s"][i : i + 1]) for i in range(len(x["s"]))
+            self.seq_tokenizer(x[i + 1 : i + 2]) for i in range(len(x[1:]))
         ]  # [B, LS, d_model]
         s_tokens = self.multi_behavior_tokenizer(s_tokens)  # [B, LS, d_model]
         h = tf.concat(
@@ -248,12 +248,7 @@ def test_onetrans():
         num_T=8,
         n_behaviors=3,
     )
-    outputs = model(
-        {
-            "ns": ns_raw,
-            "s": [buy_seq, cart_seq, click_seq],
-        }
-    )
+    outputs = model([ns_raw, buy_seq, cart_seq, click_seq])
     print("Model output shape:", outputs.shape)
 
 
