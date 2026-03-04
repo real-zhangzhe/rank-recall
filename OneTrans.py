@@ -48,18 +48,6 @@ class AutoSplitTokenizer(Layer):
         return tf.reshape(x, [-1, self.num_T, self.d_model])  # [B, num_T, d_model]
 
 
-class GroupWiseTokenizer(Layer):
-    def __init__(self, num_T, d_model, **kwargs):
-        super().__init__(**kwargs)
-        self.num_T = num_T
-        self.proj = [Dense(d_model) for _ in range(num_T)]
-
-    def call(self, x):  # x: [B, in_dim],  in_dim % num_T == 0
-        parts = tf.split(x, self.num_T, axis=-1)  # list of [B, in_dim/num_T]
-        tokens = [p(parts[i]) for i, p in enumerate(self.proj)]  # each -> [B, d_model]
-        return tf.stack(tokens, axis=1)
-
-
 # ---------------- RMSNorm ----------------
 class RMSLayerNorm(Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -213,19 +201,54 @@ class OneTrans(Layer):
 def test_onetrans():
     tf.random.set_seed(0)
 
-    B = 2
-    LS, LNS = 4, 2
-    D_MODEL = 32
-    NUM_HEAD = 4
-    D_FF = 64
+    # ==================================
+    # 构造随机输入（模拟工业推荐）
+    # ==================================
 
+    B = 4
+    LS = 132
+    LNS = 8
+    d_model = 256
+
+    # -------- Non-Sequential Features --------
+    ns_raw_dim = 128
+    ns_raw = tf.random.normal([B, ns_raw_dim])
+
+    # -------- Multi-Behavior Sequences --------
+    click_seq = tf.random.normal([B, 100, 64])
+    cart_seq = tf.random.normal([B, 20, 64])
+    buy_seq = tf.random.normal([B, 10, 64])
+
+    # ==================================
+    # Tokenization 流程
+    # ==================================
+
+    # ---- 1️⃣  NS Tokenizer（论文推荐 AutoSplit） ----
+    ns_tokenizer = AutoSplitTokenizer(num_T=8, d_model=d_model)
+    ns_tokens = ns_tokenizer(ns_raw)
+
+    # ---- 2️⃣  每个行为序列做 embedding ----
+    seq_tokenizer = SequenceTokenizer(d_model=d_model)
+
+    click_tokens = seq_tokenizer([click_seq])
+    cart_tokens = seq_tokenizer([cart_seq])
+    buy_tokens = seq_tokenizer([buy_seq])
+
+    # ---- 3️⃣  多行为 merge + SEP ----
+    multi_behavior_tokenizer = MultiBehaviorTokenizer(d_model=d_model, n_behaviors=3)
+
+    # 论文推荐高意图在前：buy → cart → click
+    s_tokens = multi_behavior_tokenizer([buy_tokens, cart_tokens, click_tokens])
+
+    # ---- 4️⃣  拼接成 unified token sequence ----
+    X0 = tf.concat([s_tokens, ns_tokens], axis=1)
+
+    print("Final unified token shape:", X0.shape)
     model = OneTrans(
-        LS=LS, d_model=D_MODEL, num_heads=NUM_HEAD, d_ff=D_FF, LNS=LNS, n_task=2
+        LS=LS, d_model=d_model, num_heads=8, d_ff=d_model, LNS=LNS, n_task=2
     )
-    inputs = tf.keras.layers.Input(shape=[LS + LNS, D_MODEL])
-    outputs = model(inputs)
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
-    model.summary()
+    outputs = model(X0)
+    print("Model output shape:", outputs.shape)
 
 
 if __name__ == "__main__":
