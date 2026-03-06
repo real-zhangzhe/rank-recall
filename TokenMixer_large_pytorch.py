@@ -79,13 +79,20 @@ class SparsePertokenMoE(nn.Module):
 
 
 class MixingReverting(nn.Module):
-    def __init__(self, dim, num_heads):
+    # 增加 num_tokens 参数
+    def __init__(self, dim, num_heads, num_tokens):
         super().__init__()
         self.num_heads = num_heads
         self.norm1 = RMSNorm(dim)
         self.norm2 = RMSNorm(dim)
 
-        self.mixing = PertokenSwiGLU(dim)
+        # 计算 mixing 层实际的输入维度
+        d = dim // num_heads
+        mix_dim = num_tokens * d
+
+        # mixing 处理展平后的 T * d 维度
+        self.mixing = PertokenSwiGLU(mix_dim)
+        # reverting 处理还原后的 D (即 dim) 维度
         self.reverting = PertokenSwiGLU(dim)
 
     def forward(self, x):
@@ -113,10 +120,14 @@ class MixingReverting(nn.Module):
 
 
 class TokenMixerLargeBlock(nn.Module):
-    def __init__(self, dim, num_heads, num_experts=4, top_k=2, hidden_mult=4):
+    # 增加 num_tokens 参数
+    def __init__(
+        self, dim, num_heads, num_tokens, num_experts=4, top_k=2, hidden_mult=4
+    ):
         super().__init__()
 
-        self.mr = MixingReverting(dim, num_heads)
+        # 将 num_tokens 传给 MixingReverting
+        self.mr = MixingReverting(dim, num_heads, num_tokens)
         self.norm = RMSNorm(dim)
         self.moe = SparsePertokenMoE(dim, num_experts, top_k, hidden_mult)
 
@@ -147,16 +158,20 @@ class SemanticTokenizer(nn.Module):
         )
 
     def forward(self, groups):
+        # 使用 `torch.cat` 拼接每个组的特征
         tokens = []
 
         for group, mlp in zip(groups, self.mlps):
             concat = torch.cat(group, dim=-1)
             tokens.append(mlp(concat))
 
+        # 通过 `stacked` 获取一个包含所有组输出的张量
         stacked = torch.stack(tokens, dim=1)
 
+        # 添加全局token的输出
         global_token = self.global_mlp(stacked.view(stacked.size(0), -1)).unsqueeze(1)
 
+        # 将全局token与原始tokens拼接，形成最终的输入表示
         return torch.cat([global_token, stacked], dim=1)
 
 
@@ -168,9 +183,15 @@ class TokenMixerLarge(nn.Module):
 
         self.tokenizer = SemanticTokenizer(group_dims, model_dim)
 
+        # 核心：在这里计算出 T 的大小 (group 数量 + 1 个 global token)
+        num_tokens = len(group_dims) + 1
+
         self.blocks = nn.ModuleList(
             [
-                TokenMixerLargeBlock(model_dim, num_heads, num_experts, top_k)
+                # 传入 num_tokens
+                TokenMixerLargeBlock(
+                    model_dim, num_heads, num_tokens, num_experts, top_k
+                )
                 for _ in range(depth)
             ]
         )
@@ -197,7 +218,7 @@ class TokenMixerLarge(nn.Module):
 
 
 B = 8
-group_dims = [[16, 8], [12, 12], [10, 6]]
+group_dims = [[128] * 26, [128] * 13]  # 模拟两组输入，每组有多个特征，每个特征维度为128
 
 groups = [[torch.randn(B, d) for d in dims] for dims in group_dims]
 
